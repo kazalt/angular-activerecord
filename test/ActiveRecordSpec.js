@@ -127,6 +127,29 @@ describe("ActiveRecord", function() {
 		$httpBackend.flush();
 	});
 
+	it("save with validation success", function() {
+    var Model = ActiveRecord.extend({
+      $urlRoot: '/resources',
+
+      $min: function(fieldValue, validationValue) {
+        fieldValue = parseInt(fieldValue, 10);
+        validationValue = parseInt(validationValue, 10);
+        return fieldValue >= validationValue;
+      },
+
+      $validations: {
+        number: {min: 5},
+        name: {required: true},
+        anOtherNumber: {min: 5}
+      }
+    });
+    var model = new Model();
+    model.number = 3;
+    model.$save().catch(function(err) {
+
+    });
+  });
+
 	it("delete", function() {
 		$httpBackend.expectDELETE('/resources/1').respond('');
 		var model = createBasicModel();
