@@ -93,7 +93,7 @@ angular.module('ActiveRecord', []).factory('ActiveRecord', ['$http', '$q', '$par
 
 		/**
 		 * Determine if the model has changed since the last sync (fetch/load).
-         *
+		 *
 		 * @param {String} [property] Determine if that specific property has changed.
 		 * @returns {Boolean}
 		 */
@@ -127,7 +127,7 @@ angular.module('ActiveRecord', []).factory('ActiveRecord', ['$http', '$q', '$par
 				}
 			}
 			for (var property in current) {
-				if (current.hasOwnProperty(property)) {
+				if (current.hasOwnProperty(property) && property.indexOf("$") !== 0) {
 					var value = current[property];
 					if (typeof value !== 'function' && angular.equals(value, previousAttributes[property]) === false) {
 						changed[property] = value;
@@ -181,6 +181,109 @@ angular.module('ActiveRecord', []).factory('ActiveRecord', ['$http', '$q', '$par
 			return deferred.promise;
 		},
 
+		/*$minLength: function(fieldValue, validationValue) {
+			if (!typeof)
+			return fieldValue.length >= validationValue;
+		},
+
+		$maxLength: function(fieldValue, validationValue) {
+			return fieldValue.length <= validationValue;
+		},
+
+		$min: function(fieldValue, validationValue) {
+			fieldValue = parseInt(fieldValue, 10);
+			validationValue = parseInt(validationValue, 10);
+			return fieldValue >= validationValue;
+		},
+
+		$max: function(fieldValue, validationValue) {
+			fieldValue = parseInt(fieldValue, 10);
+			validationValue = parseInt(validationValue, 10);
+			return fieldValue <= validationValue;
+		},
+
+		$email: function(fieldValue) {
+			var re = /^(([^<>()[\]\\.,;:\s@\"]+(\.[^<>()[\]\\.,;:\s@\"]+)*)|(\".+\"))@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\])|(([a-zA-Z\-0-9]+\.)+[a-zA-Z]{2,}))$/;
+			return re.test(fieldValue);
+		},
+
+		$inArray: function(fieldValue, validationValue) {
+			var valid = false;
+			angular.forEach(validationValue, function(v) {
+				if (fieldValue == v) valid = true;
+			});
+			return valid;
+		},*/
+
+		$notInArray: function(fieldValue, validationValue) {
+			return !this.$inArray(fieldValue, validationValue);
+		},
+
+		$validationErrorMessages: {},
+
+		$validations: {},
+
+		$fieldTranslations: {},
+
+		$errors: {},
+
+		$isValid: function(fieldName) {
+			var valid = false;
+			if (Object.keys(this.$errors).length === 0) {
+				valid = true;
+			} else if (fieldName && !this.$errors[fieldName]) {
+				valid = true;
+			}
+			return valid;
+		},
+
+		$validateOne: function(fieldName) {
+			var errors = [];
+			delete this.$errors[fieldName];
+			if (this.$validations[fieldName]) {
+				var mthis = this;
+				if (mthis[fieldName]) {
+					angular.forEach(this.$validations[fieldName], function(validationValue, functionName) {
+						var $functionName = "$" + functionName;
+						if (functionName != "required" && mthis[$functionName]) {
+							var value = validationValue;
+							var errorMessage = null;
+							if (angular.isObject(validationValue)) {
+								if (validationValue.value) value = validationValue.value;
+								if (validationValue.message) errorMessage = validationValue.message;
+							}
+							var res = mthis[$functionName](mthis[fieldName], value);
+							if (res !== true) {
+								if (!errorMessage) errorMessage = mthis.$validationErrorMessages[functionName] || "is invalid";
+								if (angular.isFunction(errorMessage)) errorMessage = errorMessage(fieldName, mthis[fieldName], value);
+								if (typeof sprintf !== "undefined") {
+									errorMessage = sprintf(errorMessage, {fieldName: mthis.$fieldTranslations[fieldName] || fieldName, fieldValue: mthis[fieldName], validationValue: value});
+								}
+								errors.push(errorMessage);
+							}
+						}
+					});
+				} else if (this.$validations[fieldName].required) {
+					errors.push("is required");
+				}
+			}
+			if (errors.length) {
+				this.$errors[fieldName] = errors;
+			}
+			return this.$isValid(fieldName);
+		},
+
+		$validate: function(fieldName) {
+			if (fieldName) return this.$validateOne(fieldName);
+
+			var mthis = this;
+			this.$errors = {};
+			angular.forEach(this.$validations, function(validation, validationKey) {
+				mthis.$validateOne(validationKey);
+			});
+			return this.$isValid();
+		},
+
 		/**
 		 * Save the record to the backend.
 		 * @param {Object} [values] Set these values before saving the record.
@@ -198,6 +301,11 @@ angular.module('ActiveRecord', []).factory('ActiveRecord', ['$http', '$q', '$par
 			}
 			var operation = this.$isNew() ? 'create' : 'update';
 			var model = this;
+			if (!model.$validate()) {
+				var deferred = $q.defer();
+				deferred.reject(model.$errors);
+				return deferred.promise;
+			}
 			options = options || {};
 			var filters = _result(this, '$writeFilters');
 			if (filters) {
