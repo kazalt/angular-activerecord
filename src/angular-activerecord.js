@@ -3,7 +3,7 @@
  * (c) 2013-2014 Bob Fanger, Jeremy Ashkenas, DocumentCloud
  * License: MIT
  */
-angular.module('ActiveRecord', []).factory('ActiveRecord', ['$http', '$q', '$parse', function($http, $q, $parse) {
+angular.module('ActiveRecord', []).factory('ActiveRecord', ['$http', '$q', '$parse', '$injector', function($http, $q, $parse, $injector) {
 	'use strict';
 
 	/**
@@ -16,6 +16,14 @@ angular.module('ActiveRecord', []).factory('ActiveRecord', ['$http', '$q', '$par
 		if (object == null) return null;
 		var value = object[property];
 		return angular.isFunction(value) ? value.call(object) : value;
+	};
+
+	var _ucfirst = function(string) {
+		return string.charAt(0).toUpperCase() + string.slice(1);
+	};
+
+	var _lcfirst = function(string) {
+		return string.charAt(0).toLowerCase() + string.slice(1);
 	};
 
 	/**
@@ -93,7 +101,7 @@ angular.module('ActiveRecord', []).factory('ActiveRecord', ['$http', '$q', '$par
 
 		/**
 		 * Determine if the model has changed since the last sync (fetch/load).
-         *
+		 *
 		 * @param {String} [property] Determine if that specific property has changed.
 		 * @returns {Boolean}
 		 */
@@ -157,6 +165,53 @@ angular.module('ActiveRecord', []).factory('ActiveRecord', ['$http', '$q', '$par
 			return {};
 		},
 
+		$toCamelCase: function(string) {
+			var camelCase = string.replace (/(?:^|[-_])(\w)/g, function (_, c) {
+				return c ? c.toUpperCase () : '';
+			});
+			return camelCase;
+		},
+
+		$computeData: function(data) {
+			var model = this;
+			angular.forEach(data, function(value, key) {
+				var camelCaseKey = model.$toCamelCase(key);
+				var lowerCaseKey = camelCaseKey.toLowerCase();
+				var assocName = null;
+				var module = null;
+				angular.forEach(model.$associations, function(valueAssoc, keyAssoc) {
+					if (lowerCaseKey == keyAssoc.toLowerCase()) {
+						assocName = keyAssoc;
+					} else if (valueAssoc.options.through && lowerCaseKey == valueAssoc.options.through.toLowerCase()) {
+						assocName = valueAssoc.options.through;
+					} else if (valueAssoc.options.singular && valueAssoc.options.singular.toLowerCase() == lowerCaseKey) {
+						module = keyAssoc;
+						assocName = valueAssoc.options.singular;
+					}
+				});
+				if (assocName) {
+					if (!module) module = assocName;
+					var lowerCamelCaseKey = _lcfirst(assocName);
+					var AssocModel = $injector.get(module);
+					if (angular.isArray(value)) {
+						model["$" + lowerCamelCaseKey] = [];
+						angular.forEach(value, function(v) {
+							var assocModel = new AssocModel();
+							assocModel.$computeData(v);
+							model["$" + lowerCamelCaseKey].push(assocModel);
+						});
+					} else {
+						var assocModel = new AssocModel();
+						assocModel.$computeData(value);
+						model["$" + lowerCamelCaseKey] = assocModel;
+					}
+				} else {
+					model[key] = value;
+				}
+			});
+			return model;
+		},
+
 		/**
 		 * (re)load data from the backend.
 		 * @param {Object} [options] sync options
@@ -169,7 +224,8 @@ angular.module('ActiveRecord', []).factory('ActiveRecord', ['$http', '$q', '$par
 				var data = model.$parse(response.data, options);
 				if (angular.isObject(data)) {
 					applyFilters(_result(model, '$readFilters'), data);
-					angular.extend(model, data);
+					model.$computeData(data);
+					data = angular.copy(model);
 					model.$previousAttributes = function () {
 						return data;
 					};
@@ -179,6 +235,98 @@ angular.module('ActiveRecord', []).factory('ActiveRecord', ['$http', '$q', '$par
 				}
 			}, deferred.reject);
 			return deferred.promise;
+		},
+
+		$saveBelongsToAssociations: function(values, options, deferred) {
+			var model = this;
+			// we want to save associations before.. so we need some callback stuff
+			var nbrLeft = 0;
+			var nbrFound = 0;
+			var err = false;
+			var assocsaveCallbackContainer = function(assoc) {
+				return function() {
+					if (err) return;
+					if (assoc.$isNew()) {
+						err = true;
+						return deferred.reject();
+					}
+					nbrLeft--;
+					if (nbrLeft === 0) {
+						model.$save(values, options).then(function(model) {
+							deferred.resolve(model);
+						}).catch(function(err) {
+							deferred.reject(err);
+						});
+					}
+				};
+			};
+			// get all associations data and save them if needed
+			angular.forEach(this.$associations, function(assocObj, assocKey) {
+				var keyName = assocKey;
+				if (assocObj.options.singular) keyName = assocObj.options.singular;
+				keyName = _lcfirst(keyName);
+				var assoc = model["$" + keyName];
+				if (assoc && assocObj.type == "belongsTo") {
+					if (assoc.$isNew()) {
+						nbrFound++;
+						nbrLeft++;
+						assoc.$save().then(
+							assocsaveCallbackContainer(assoc)
+						).catch(function(error) {
+							err = true;
+							deferred.reject(error);
+						});
+					} else {
+						model[assocObj.options.key] = assoc.id;
+					}
+				}
+			});
+
+			return nbrFound;
+		},
+
+		$saveHasManyAssociations: function(deferred) {
+			var model = this;
+			var nbrLeft = 0;
+			var nbrFound = 0;
+			var err = false;
+
+			var assocsaveCallbackContainer = function(assoc) {
+				return function() {
+					if (err) return;
+					if (assoc.$isNew()) {
+						err = true;
+						return deferred.reject();
+					}
+					nbrLeft--;
+					if (nbrLeft === 0) {
+						deferred.resolve(model);
+					}
+				};
+			};
+			angular.forEach(this.$associations, function(assocObj, assocKey) {
+				var keyName = assocKey;
+				if (assocObj.options.through) keyName = assocObj.options.through;
+				keyName = _lcfirst(keyName);
+				var assocs = model["$" + keyName];
+				if (assocs && assocObj.type == "hasMany") {
+					angular.forEach(assocs, function(assoc) {
+						if (assoc.$isNew() || assoc.$changedAttributes()) {
+							nbrFound++;
+							nbrLeft++;
+							assoc[assoc.$associations[model.$name].options.key] = model.id;
+							assoc.$save().then(
+								assocsaveCallbackContainer(assoc)
+							).catch(function(error) {
+								err = true;
+								deferred.reject(error);
+							});
+						}
+					});
+				}
+			});
+
+			return nbrFound;
 		},
 
 		/**
@@ -200,13 +348,19 @@ angular.module('ActiveRecord', []).factory('ActiveRecord', ['$http', '$q', '$par
 			var model = this;
 			options = options || {};
 			var filters = _result(this, '$writeFilters');
+			//if we have found some associations not already saved, we need to wait for our callback to be called
+			var deferred = $q.defer();
+			if (this.$saveBelongsToAssociations(values, options, deferred)) {
+				return deferred.promise;
+			}
+			var data = this.$isNew() ? this : this.$changedAttributes();
 			if (filters) {
-				options.data = angular.copy(this);
+				options.data = angular.copy(data);
 				applyFilters(filters, options.data);
 			} else {
-				options.data = this;
+				options.data = angular.copy(data);
 			}
-			return this.$sync(operation, this, options).then(function (response) {
+			this.$sync(operation, this, options).then(function (response) {
 				var data = model.$parse(response.data, options);
 				if (angular.isObject(data)) {
 					applyFilters(_result(model, '$readFilters'), data);
@@ -215,8 +369,11 @@ angular.module('ActiveRecord', []).factory('ActiveRecord', ['$http', '$q', '$par
 						return data;
 					};
 				}
-				return model;
+				if (!model.$saveHasManyAssociations(deferred)) deferred.resolve(model);
+			}).catch(function(err) {
+				deferred.reject(err);
 			});
+			return deferred.promise;
 		},
 
 		/**
@@ -242,6 +399,8 @@ angular.module('ActiveRecord', []).factory('ActiveRecord', ['$http', '$q', '$par
 		 */
 		$url: function() {
 			var urlRoot = _result(this, '$urlRoot');
+			var urlRessource = _result(this, '$urlRessource');
+			if (urlRessource) urlRoot += urlRessource;
 			if (typeof this[this.$idAttribute] === 'undefined') {
 				return urlRoot;
 			}
@@ -355,7 +514,45 @@ angular.module('ActiveRecord', []).factory('ActiveRecord', ['$http', '$q', '$par
 			angular.extend(child.prototype, protoProps);
 		}
 		child.__super__ = parent.prototype;
+		child.prototype.$associations = {};
 		return child;
+	};
+
+	ActiveRecord.hasMany = function(entity, options) {
+		if (!options) options = {};
+		if ($injector.has(entity)) {
+			var mthis = this;
+			var name = _lcfirst(entity);
+			var relatedName = _lcfirst(options.through);
+			this.prototype.$associations[entity] = {type: "hasMany", options: options};
+			this.prototype["add" + entity] = function(model, relatedData) {
+				var options = this.$associations[entity].options;
+				if (!relatedData) relatedData = {};
+				if (!this["$" + relatedName]) this["$" + relatedName] = [];
+				var RelatedModel = $injector.get(options.through);
+				var newEntity = new RelatedModel(relatedData);
+				var entityName = entity;
+				if (newEntity.$associations[entity].options.singular) {
+					entityName = _ucfirst(newEntity.$associations[entity].options.singular);
+				}
+				newEntity["add" + entityName](model);
+				this["$" + relatedName].push(newEntity);
+				return model;
+			};
+		}
+	};
+
+	ActiveRecord.belongsTo = function(entity, options) {
+		if (!options) options = {};
+		if ($injector.has(entity)) {
+			var name = _lcfirst(options.singular || entity);
+			this.prototype.$associations[entity] = {type: "belongsTo", options: options};
+			var functionName = options.singular? _ucfirst(options.singular) : entity;
+			this.prototype["add" + functionName] = function(model) {
+				this["$" + name] = model;
+				return model;
+			};
+		}
 	};
 
 	/**
