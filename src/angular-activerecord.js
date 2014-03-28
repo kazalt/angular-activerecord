@@ -190,8 +190,12 @@ angular.module('ActiveRecord', []).factory('ActiveRecord', ['$http', '$q', '$par
 				var assocName = null;
 				var module = null;
 				angular.forEach(model.$associations, function(valueAssoc, keyAssoc) {
+					var Assoc = $injector.get(keyAssoc);
 					if (lowerCaseKey == keyAssoc.toLowerCase()) {
 						assocName = keyAssoc;
+					} else if (lowerCaseKey == Assoc.prototype.$plurial.toLowerCase()) {
+						assocName = Assoc.prototype.$plurial;
+						module = keyAssoc;
 					} else if (valueAssoc.options.through) {
 						var Related = $injector.get(valueAssoc.options.through);
 						var relName = Related.prototype.$plurial || Related.prototype.$name || valueAssoc.options.through;
@@ -390,7 +394,7 @@ angular.module('ActiveRecord', []).factory('ActiveRecord', ['$http', '$q', '$par
 				};
 			};
 			angular.forEach(this.$associations, function(assocObj, assocKey) {
-				var Related = $injector.get(assocObj.options.through);
+				var Related = $injector.get(assocObj.options.through || assocKey);
 				var keyName = Related.prototype.$plurial || Related.prototype.$name || assocObj.options.through;
 				keyName = _lcfirst(keyName);
 				var assocs = model[keyName];
@@ -482,7 +486,13 @@ angular.module('ActiveRecord', []).factory('ActiveRecord', ['$http', '$q', '$par
 			if (this.$saveBelongsToAssociations(values, options, deferred)) {
 				return deferred.promise;
 			}
-			var data = this.$isNew() ? this : this.$changedAttributes();
+			var tdata = this.$isNew() ? this : this.$changedAttributes();
+			var data = {};
+			angular.forEach(tdata, function(v, k) {
+				if (!model.$attributeInAssociation(k)) {
+					data[k] = v;
+				}
+			});
 			if (filters) {
 				options.data = angular.copy(data);
 				applyFilters(filters, options.data);
@@ -671,7 +681,8 @@ angular.module('ActiveRecord', []).factory('ActiveRecord', ['$http', '$q', '$par
 		if (!options) options = {};
 		if ($injector.has(entity) && (!options.through || $injector.has(options.through))) {
 			var mthis = this;
-			var Related = $injector.get(options.through);
+			var Related = $injector.get(options.through || entity);
+			var isThrough = !!options.through;
 			var relatedName = _lcfirst(Related.prototype.$plurial || Related.prototype.$name || options.through);
 			this.prototype.$associations[entity] = {type: "hasMany", options: options};
 			this.prototype[relatedName] = [];
@@ -679,8 +690,13 @@ angular.module('ActiveRecord', []).factory('ActiveRecord', ['$http', '$q', '$par
 				if (model.$isNew()) return "can't be new";
 				var options = this.$associations[entity].options;
 				if (!relatedData) relatedData = {};
-				var newEntity = new Related(relatedData);
-				newEntity["add" + entity](model);
+				var newEntity = null;
+				if (isThrough) {
+					newEntity = new Related(relatedData);
+					newEntity["add" + entity](model);
+				} else {
+					newEntity = model;
+				}
 				this[relatedName].push(newEntity);
 				return this;
 			};
