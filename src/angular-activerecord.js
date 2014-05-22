@@ -507,6 +507,7 @@ angular.module('ActiveRecord', []).factory('ActiveRecord', ['$http', '$q', '$par
 					model.$previousAttributes = function () {
 						return data;
 					};
+					model.$computeData(data);
 				}
 				if (!model.$saveHasManyAssociations(deferred)) deferred.resolve(model);
 			}).catch(function(err) {
